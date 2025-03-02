@@ -3,4 +3,5 @@ pypdf
 openai
 python-dotenv
 pydub
+moviepy
 pillow

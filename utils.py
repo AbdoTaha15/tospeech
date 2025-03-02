@@ -91,13 +91,12 @@ def text_to_speech(text, voice="alloy"):
         return None
 
 
-def merge_audio_files(audio_files_dict, pages_data):
+def merge_audio_files(audio_files_dict):
     """
     Merge multiple audio files into a single audio file.
 
     Parameters:
     - audio_files_dict: Dictionary with page indices as keys and audio data as values
-    - pages_data: List of page data objects
 
     Returns:
     - BytesIO object containing merged audio data in MP3 format

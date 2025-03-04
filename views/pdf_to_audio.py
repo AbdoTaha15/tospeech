@@ -3,7 +3,7 @@ import tempfile
 import gc  # Garbage collection
 
 import streamlit as st
-from utils import extract_text_from_pdf, text_to_speech, merge_audio_files
+from tools.pdf_tools import extract_text_from_pdf, text_to_speech, merge_audio_files
 
 st.set_page_config(
     page_title="PDF to Audio Converter",

@@ -184,8 +184,6 @@ if uploaded_file:
                 ) = translate_audio(
                     st.session_state.audio_path, target_lang_full, voice
                 )
-                st.write(st.session_state.transcription)
-                st.write(st.session_state.translation)
             else:
                 # Multiple segment processing
                 segment_translations = []
@@ -253,10 +251,7 @@ if uploaded_file:
                 translated_duration = len(translated_audio)
 
                 # Adjust speed of translated audio to match original duration if they differ significantly
-                speed_ratio = (
-                    translated_duration / original_duration
-                )  # FIXED: Inverted ratio
-                st.write(f"Speed Ratio: {speed_ratio:.2f}")
+                speed_ratio = translated_duration / original_duration
                 if (
                     abs(1.0 - speed_ratio) > 0.02
                 ):  # Only adjust if difference is significant (>2%)

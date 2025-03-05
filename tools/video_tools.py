@@ -3,10 +3,10 @@ import gc
 import tempfile
 from moviepy import VideoFileClip, AudioFileClip
 import openai
-import base64
 from pydub import AudioSegment
 import streamlit as st
-
+import numpy as np
+import pyrubberband as pyrb
 
 # Initialize OpenAI client from environment variable
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -55,13 +55,6 @@ def extract_audio_from_video(video_path):
     """Extract audio track from a video file using MoviePy"""
     try:
         with st.spinner("Extracting audio from video..."):
-            # Get video metadata
-            metadata = get_video_metadata(video_path)
-            if metadata:
-                duration = metadata.get("format", {}).get("duration")
-                if duration:
-                    st.info(f"Processing video: {float(duration):.1f}s duration")
-
             # Create a temporary file for the audio
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
                 audio_path = temp_audio.name
@@ -170,35 +163,13 @@ def merge_video_with_audio(video_path, audio_path):
     """Merge video with a new audio track using MoviePy"""
     try:
         with st.spinner("Merging video with translated audio..."):
-            # Get video metadata
-            metadata = get_video_metadata(video_path)
-            if metadata and metadata.get("streams"):
-                video_streams = [
-                    s
-                    for s in metadata.get("streams", [])
-                    if s.get("codec_type") == "video"
-                ]
-                if video_streams:
-                    video_stream = video_streams[0]
-                    width = video_stream.get("width", 0)
-                    height = video_stream.get("height", 0)
-                    fps = eval(video_stream.get("r_frame_rate", "30/1"))
-                    st.info(f"Video properties: {width}x{height} @ {fps}fps")
-
             # Create output file path
             output_path = tempfile.mktemp(suffix=".mp4")
 
             # Load video and audio clips
             with VideoFileClip(video_path) as video, AudioFileClip(audio_path) as audio:
-
-                # If the audio is shorter than the video, we need to handle that
-                if audio.duration < video.duration:
-                    st.warning(
-                        f"The translated audio ({audio.duration:.1f}s) is shorter than the video ({video.duration:.1f}s). The remaining part will be silent."
-                    )
-
                 # Set the audio of the video
-                video = video.with_audio(audio)
+                video: VideoFileClip = video.with_audio(audio)
 
                 # Write the result with parameters optimized based on original video
                 video.write_videofile(
@@ -232,8 +203,6 @@ def split_long_audio(audio_path, max_duration=25):
         audio = AudioSegment.from_file(audio_path)
         audio_duration_seconds = len(audio) / 1000
 
-        st.info(f"Audio duration: {audio_duration_seconds:.1f}s")
-
         if audio_duration_seconds <= max_duration:
             return [audio_path]
 
@@ -241,8 +210,32 @@ def split_long_audio(audio_path, max_duration=25):
         silence_points = detect_silence(
             audio,
             min_silence_len=500,  # Look for silences of at least 500ms
-            silence_thresh=-35,  # Consider anything quieter than -35dB as silence
+            silence_thresh=-40,  # More permissive threshold (was -35dB)
         )
+
+        # If no silence points were detected, use time-based splitting instead
+        if not silence_points:
+            st.warning(
+                "No silence detected in audio. Using time-based splitting instead."
+            )
+            segment_max_ms = max_duration * 1000
+            segments = []
+
+            # Split by fixed time chunks
+            for i in range(0, len(audio), segment_max_ms):
+                segment = audio[i : i + segment_max_ms]
+                if len(segment) > 500:  # Only save segments longer than 500ms
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=".wav"
+                    ) as temp_file:
+                        segment_path = temp_file.name
+                    segment.export(segment_path, format="wav", parameters=["-q:a", "0"])
+                    segments.append(segment_path)
+
+            if segments:
+                st.success(f"Split audio into {len(segments)} time-based segments")
+                return segments
+            return [audio_path]
 
         # Convert silence ranges to single points (end of each silence)
         silence_positions = [end for _, end in silence_points]
@@ -264,15 +257,17 @@ def split_long_audio(audio_path, max_duration=25):
             search_window = 5000  # Look up to 5 seconds past the target
 
             # Find the nearest silence point after target_end
+            silence_found = False
             for pos in silence_positions:
                 if pos > target_end:
                     # Found a silence point after target_end
                     if pos - target_end <= search_window:
                         next_silence = pos
+                        silence_found = True
                     break
 
-            # If no suitable silence found, cap at max additional length
-            if next_silence > target_end + search_window:
+            # If no suitable silence found within window, use target_end directly
+            if not silence_found:
                 next_silence = target_end
 
             # Extract segment
@@ -284,34 +279,34 @@ def split_long_audio(audio_path, max_duration=25):
                 start_pos = next_silence
                 continue
 
-            segment_path = None
-            try:
-                # Create a new temp file for each segment
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".wav"
-                ) as temp_file:
-                    segment_path = temp_file.name
+            # Create a new temp file for each segment
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+                segment_path = temp_file.name
 
-                # Export to the temp file path - explicitly close the file
-                segment.export(
-                    segment_path, format="wav", parameters=["-q:a", "0"]
-                ).close()
+            # Export to the temp file path - don't call .close() on the export result
+            try:
+                segment.export(segment_path, format="wav", parameters=["-q:a", "0"])
 
                 # Verify the file exists and has content
                 if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
-                    segments.append(segment_path)
-                    st.info(
-                        f"Segment {len(segments)}: {len(segment)/1000:.1f}s, starts at {start_pos/1000:.1f}s"
-                    )
+                    # Double verify by trying to load it back
+                    test_segment = AudioSegment.from_file(segment_path)
+                    if len(test_segment) > 0:
+                        segments.append(segment_path)
+                    else:
+                        st.warning(
+                            f"Created segment appears empty at {start_pos/1000:.1f}s"
+                        )
+                        os.unlink(segment_path)
                 else:
                     st.warning(
                         f"Failed to create segment at position {start_pos/1000:.1f}s"
                     )
-                    if segment_path and os.path.exists(segment_path):
+                    if os.path.exists(segment_path):
                         os.unlink(segment_path)
             except Exception as segment_error:
                 st.warning(f"Error processing segment: {str(segment_error)}")
-                if segment_path and os.path.exists(segment_path):
+                if os.path.exists(segment_path):
                     os.unlink(segment_path)
 
             # Move to the next segment
@@ -320,14 +315,12 @@ def split_long_audio(audio_path, max_duration=25):
             # Force garbage collection after each segment to prevent memory buildup
             gc.collect()
 
-        # Fallback to original if segmentation failed
+        # Fallback to original if segmentation failed or produced nothing useful
         if not segments:
             st.warning("No valid segments created, falling back to original audio")
             return [audio_path]
 
-        st.success(
-            f"Successfully split audio into {len(segments)} segments at natural silence points"
-        )
+        st.success(f"Successfully split audio into {len(segments)} segments")
         return segments
 
     except Exception as e:
@@ -336,155 +329,94 @@ def split_long_audio(audio_path, max_duration=25):
         return [audio_path]  # Fall back to original file
 
 
-def adjust_audio_speed(
-    audio_path, speed_ratio, pitch_shift_semitones=None, auto_pitch_compensation=True
-):
+def adjust_audio_speed(audio_path, speed_ratio):
     """
-    Adjust audio speed and/or pitch using high-quality processing with optional automatic pitch compensation.
+    Adjust the speed (duration) of an audio file while preserving its pitch
+    using high-quality time stretching with librosa.
 
     Args:
-        audio_path: Path to the input audio file
-        speed_ratio: Speed factor (>1 speeds up, <1 slows down)
-        pitch_shift_semitones: Number of semitones to shift pitch (positive = higher, negative = lower)
-                               If None and auto_pitch_compensation is True, pitch is automatically adjusted
-        auto_pitch_compensation: If True and pitch_shift_semitones is None, automatically calculate
-                                 pitch shift to maintain natural sound
+        audio_path (str): Path to the input audio file.
+        speed_ratio (float): Factor to adjust speed.
+                             For example, if the first audio is 10 sec and you want it to match a 15 sec audio,
+                             use speed_ratio = 10/15 (~0.67). A speed_ratio < 1 stretches the audio (longer duration),
+                             and > 1 compresses it (shorter duration).
 
     Returns:
-        Path to the adjusted audio file
+        AudioSegment: A pydub AudioSegment object with the adjusted duration and original pitch.
     """
     try:
-        import math
+        # Load the audio file with pydub to get info
+        audio = AudioSegment.from_file(audio_path)
+        sample_rate = audio.frame_rate
+        channels = audio.channels
+        sample_width = audio.sample_width
 
-        # Validate inputs to prevent domain errors
-        if speed_ratio <= 0:
-            st.warning(f"Invalid speed ratio ({speed_ratio}), using 1.0 instead")
-            speed_ratio = 1.0
+        # Convert pydub AudioSegment to a numpy array of samples
+        samples = np.array(audio.get_array_of_samples())
 
-        # Limit extreme values to prevent processing issues
-        if speed_ratio < 0.25:
-            st.warning(f"Speed ratio too low ({speed_ratio}), limited to 0.25")
-            speed_ratio = 0.25
-        elif speed_ratio > 4.0:
-            st.warning(f"Speed ratio too high ({speed_ratio}), limited to 4.0")
+        # For multi-channel audio, reshape into (n_samples, channels)
+        if channels > 1:
+            samples = samples.reshape((-1, channels))
 
-        # Create a temporary file for the adjusted audio
+        # Determine maximum possible absolute value for the given sample width (assumes signed integers)
+        max_val = float(2 ** (8 * sample_width - 1))
+
+        # Normalize samples to float32 in range [-1.0, 1.0]
+        samples_float = samples.astype(np.float32) / max_val
+
+        # Use pyrubberband to time stretch the audio.
+        # Note: If speed_ratio < 1, the audio is stretched (slower, longer duration);
+        # if speed_ratio > 1, the audio is compressed (faster, shorter duration).
+        # pyrubberband works with mono (1D) or multi-channel (2D) arrays.
+        stretched = pyrb.time_stretch(samples_float, sample_rate, speed_ratio)
+
+        # Convert the stretched audio back to integer format
+        # Clip to avoid potential overflows and convert to int16 (common sample width)
+        stretched_int = np.clip(stretched * max_val, -max_val, max_val - 1).astype(
+            np.int16
+        )
+
+        # For multi-channel audio, flatten the array back into interleaved format
+        if channels > 1:
+            stretched_int = stretched_int.flatten()
+
+        # Create a new AudioSegment from the processed raw data
+        new_audio = AudioSegment(
+            data=stretched_int.tobytes(),
+            sample_width=sample_width,
+            frame_rate=sample_rate,
+            channels=channels,
+        )
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
             adjusted_path = temp_file.name
-
-        # Calculate pitch shift if automatic compensation is requested
-        if pitch_shift_semitones is None and auto_pitch_compensation:
-            try:
-                # Formula: 12 semitones = 1 octave = doubling/halving of frequency
-                # To counteract the natural pitch change from speed adjustment
-                pitch_shift_semitones = -12 * math.log2(speed_ratio)
-                st.info(
-                    f"Auto-compensating pitch by {pitch_shift_semitones:.1f} semitones to maintain natural sound"
-                )
-            except (ValueError, ZeroDivisionError, OverflowError):
-                pitch_shift_semitones = 0
-                st.warning(
-                    "Could not calculate automatic pitch compensation, using no pitch shift"
-                )
-        elif pitch_shift_semitones is None:
-            pitch_shift_semitones = 0
-
-        # Load audio with pydub
-        audio = AudioSegment.from_file(audio_path)
-
-        # Check if audio has content
-        if len(audio) == 0:
-            st.warning("Audio file is empty, returning original file")
-            return audio_path
-
-        # For pitch shifting with pydub:
-        # Calculate pitch shift factor (2^(n/12) for n semitones)
-        pitch_factor = 2 ** (pitch_shift_semitones / 12.0)
-
-        # 1. First adjust pitch by changing sample rate
-        original_sample_rate = audio.frame_rate
-        pitch_adjusted_sample_rate = int(original_sample_rate * pitch_factor)
-
-        # Export with the new sample rate (changes pitch and speed)
-        audio.export(
-            adjusted_path,
-            format="wav",
-            parameters=["-ar", str(pitch_adjusted_sample_rate)],
-        )
-
-        # 2. Reload with original frame rate to keep pitch change but restore duration
-        adjusted_audio = AudioSegment.from_file(adjusted_path)
-        adjusted_audio = adjusted_audio._spawn(
-            adjusted_audio.raw_data, overrides={"frame_rate": original_sample_rate}
-        )
-
-        # 3. Now apply speed adjustment if needed
-        # Calculate the speed adjustment sample rate
-        speed_adjusted_sample_rate = int(original_sample_rate / speed_ratio)
-
-        # Apply the speed change
-        adjusted_audio = adjusted_audio._spawn(
-            adjusted_audio.raw_data,
-            overrides={"frame_rate": speed_adjusted_sample_rate},
-        )
-
-        # Export and reload to finalize changes
-        adjusted_audio.export(adjusted_path, format="wav")
-        adjusted_audio = AudioSegment.from_file(adjusted_path)
-        adjusted_audio = adjusted_audio._spawn(
-            adjusted_audio.raw_data, overrides={"frame_rate": original_sample_rate}
-        )
-
-        # Export the final version with high quality settings
-        adjusted_audio.export(
-            adjusted_path,
-            format="wav",
-            parameters=["-q:a", "0"],  # Use highest quality
-        )
-
-        st.info(
-            f"Audio processed: speed={speed_ratio:.2f}x, pitch shift={pitch_shift_semitones:.1f} semitones"
-        )
+            new_audio.export(adjusted_path, format="wav")
         return adjusted_path
 
     except Exception as e:
-        st.warning(f"Could not adjust audio with high quality method: {str(e)}")
+        st.warning(f"Could not adjust audio with main method: {str(e)}")
 
-        # Fall back to the simpler method if the high-quality method fails
+        # Fall back to the simpler method if the main method fails
         try:
-            # Load the audio file
+            # Simple fallback using only direct sample rate manipulation
             audio = AudioSegment.from_file(audio_path)
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
                 adjusted_path = temp_file.name
 
-            # Use traditional PyDub approach as fallback
-            original_frame_rate = audio.frame_rate
-            new_frame_rate = int(
-                original_frame_rate / max(speed_ratio, 0.1)
-            )  # Prevent division by zero
+            # Calculate a combined speed and pitch factor
+            adjusted_sample_rate = int(audio.frame_rate * speed_ratio)
 
-            # Export with the new frame rate
-            audio.export(
-                adjusted_path, format="wav", parameters=["-ar", str(new_frame_rate)]
+            # Apply the adjustment
+            adjusted_audio = audio._spawn(
+                audio.raw_data, overrides={"frame_rate": adjusted_sample_rate}
             )
 
-            # Reload with original frame rate to achieve the speed change
-            adjusted_audio = AudioSegment.from_file(adjusted_path)
-            adjusted_audio = adjusted_audio._spawn(
-                adjusted_audio.raw_data, overrides={"frame_rate": original_frame_rate}
-            )
+            # Export the adjusted audio
+            adjusted_audio.export(adjusted_path, format="wav")
 
-            # Export the final version with high quality settings
-            adjusted_audio.export(
-                adjusted_path,
-                format="wav",
-                parameters=["-q:a", "0"],  # Use highest quality
-            )
-
-            st.warning("Using fallback method for audio speed adjustment")
+            st.warning("Using simplified method for audio speed adjustment")
             return adjusted_path
 
         except Exception as e2:
-            st.error(f"All audio speed and pitch adjustment methods failed: {str(e2)}")
-            return audio_path
+            st.error(f"All audio adjustment methods failed: {str(e2)}")
+            return audio_path  # Return original as last resort

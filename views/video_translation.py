@@ -32,7 +32,6 @@ if (
     st.session_state.transcription = None
     st.session_state.translation = None
     st.session_state.video_metadata = None
-    st.session_state.debug_info = None
     st.session_state.video_translation_initialized = True
 
     # Clean up temporary files when app exits
@@ -120,23 +119,8 @@ if uploaded_file:
         st.session_state.translated_audio_path = None
         st.session_state.output_video_path = None
         st.session_state.processing_step = None
-        st.session_state.debug_info = None
+        st.rerun()
 
-    # Target language selection
-    # target_language_options = {
-    #     "English": "English",
-    #     "Arabic": "Arabic",
-    #     "French": "French",
-    #     "German": "German",
-    #     "Spanish": "Spanish",
-    #     "Italian": "Italian",
-    #     "Japanese": "Japanese",
-    #     "Korean": "Korean",
-    #     "Portuguese": "Portuguese",
-    #     "Russian": "Russian",
-    #     "Chinese": "Chinese (Mandarin)",
-    # }
-    # target_language = st.selectbox("Translate to", list(target_language_options.keys()))
     target_lang_full = st.text_input(
         "Write the full name of the target language", "Arabic"
     )
@@ -163,7 +147,6 @@ if uploaded_file:
         max_segment_duration = st.slider(
             "Maximum segment duration (seconds)", 10, 120, 25
         )
-        show_debug_info = st.checkbox("Show debugging information", value=False)
 
     # Process video button
     if st.button("Start Translation Process"):
@@ -190,10 +173,6 @@ if uploaded_file:
                 audio_segments = split_long_audio(
                     st.session_state.audio_path, max_segment_duration
                 )
-                if len(audio_segments) > 1:
-                    st.info(
-                        f"Audio split into {len(audio_segments)} segments for processing"
-                    )
 
             # Process each segment
             if len(audio_segments) == 1:
@@ -231,7 +210,7 @@ if uploaded_file:
                     progress_bar.progress((i + 1) / len(audio_segments))
 
                 # Combine results
-                st.session_state.translation = "\n\n".join(segment_translations)
+                st.session_state.translation = " ".join(segment_translations)
 
                 # Merge audio segments
                 with st.spinner("Merging translated audio segments..."):
@@ -263,7 +242,7 @@ if uploaded_file:
             and not st.session_state.output_video_path
         ):
             # Always load the translated audio
-            translated_audio = AudioSegment.from_file(
+            translated_audio: AudioSegment = AudioSegment.from_file(
                 st.session_state.translated_audio_path
             )
 
@@ -274,20 +253,22 @@ if uploaded_file:
                 translated_duration = len(translated_audio)
 
                 # Adjust speed of translated audio to match original duration if they differ significantly
-                speed_ratio = translated_duration / original_duration
-
-                if speed_ratio != 1.0:
-                    st.info(
-                        f"Adjusting translated audio speed by {speed_ratio:.2f}x to match video length"
-                    )
-
-                    # Use our new Python function instead of ffmpeg command
+                speed_ratio = (
+                    translated_duration / original_duration
+                )  # FIXED: Inverted ratio
+                st.write(f"Speed Ratio: {speed_ratio:.2f}")
+                if (
+                    abs(1.0 - speed_ratio) > 0.02
+                ):  # Only adjust if difference is significant (>2%)
+                    # Use our Python function for audio adjustment
                     speed_adjusted_path = adjust_audio_speed(
-                        st.session_state.translated_audio_path, speed_ratio
+                        st.session_state.translated_audio_path,
+                        speed_ratio,
                     )
 
                     # Update the translated audio path to use the speed-adjusted version
                     translated_audio = AudioSegment.from_file(speed_adjusted_path)
+
                     # Update the session state to use the adjusted audio
                     with tempfile.NamedTemporaryFile(
                         delete=False, suffix=".wav"
@@ -295,77 +276,12 @@ if uploaded_file:
                         translated_audio.export(temp_audio.name, format="wav")
                         st.session_state.translated_audio_path = temp_audio.name
 
-            # # If preserving original audio at low volume is selected
-            # if preserve_original_audio and st.session_state.audio_path:
-            #     with st.spinner("Mixing original and translated audio..."):
-            #         # Load both audio files
-            #         original_audio = AudioSegment.from_file(st.session_state.audio_path)
-            #         translated_audio = AudioSegment.from_file(
-            #             st.session_state.translated_audio_path
-            #         )
-
-            #         # Get durations
-            #         original_duration = len(original_audio)
-            #         translated_duration = len(translated_audio)
-
-            #         # Match volumes - reduce original volume substantially
-            #         original_audio = original_audio - 20  # Reduce by 20 dB
-
-            #         # Ensure both audio segments are the same length
-            #         if translated_duration < original_duration:
-            #             # Add silence to end of translated audio
-            #             silence = AudioSegment.silent(
-            #                 duration=original_duration - translated_duration
-            #             )
-            #             translated_audio = translated_audio + silence
-            #         elif original_duration < translated_duration:
-            #             # Add silence to end of original audio
-            #             silence = AudioSegment.silent(
-            #                 duration=translated_duration - original_duration
-            #             )
-            #             original_audio = original_audio + silence
-
-            #         # Mix the audio tracks with appropriate balance
-            #         # Use overlay with gain_during_overlay to control the mix better
-            #         mixed_audio = translated_audio.overlay(
-            #             original_audio,
-            #             position=0,
-            #             gain_during_overlay=-5,  # Additional reduction during overlay
-            #         )
-
-            #         # Apply a slight normalization to prevent clipping
-            #         peak_amplitude = max(
-            #             abs(np.array(mixed_audio.get_array_of_samples()).max()),
-            #             abs(np.array(mixed_audio.get_array_of_samples()).min()),
-            #         )
-
-            #         # Normalize only if needed to prevent clipping
-            #         if peak_amplitude > 32700:  # Close to 16-bit max (32767)
-            #             normalized_audio = (
-            #                 mixed_audio - 3
-            #             )  # Reduce by 3dB to prevent clipping
-            #         else:
-            #             normalized_audio = mixed_audio
-
-            #         # Save the mixed audio with high quality settings
-            #         with tempfile.NamedTemporaryFile(
-            #             delete=False, suffix=".wav"
-            #         ) as temp_mixed:
-            #             normalized_audio.export(
-            #                 temp_mixed.name,
-            #                 format="wav",
-            #                 parameters=["-q:a", "0"],  # Use highest quality
-            #             )
-            #             # Replace the translated audio path with the mixed version
-            #             st.session_state.translated_audio_path = temp_mixed.name
-
             # Merge with video
             start_time = time.time()
             st.session_state.output_video_path = merge_video_with_audio(
                 st.session_state.video_path, st.session_state.translated_audio_path
             )
             processing_time = time.time() - start_time
-            st.session_state.debug_info = f"{st.session_state.debug_info}\nVideo processing time: {processing_time:.1f}s"
 
             if not st.session_state.output_video_path:
                 st.error(
@@ -375,38 +291,13 @@ if uploaded_file:
 
             st.session_state.processing_step = "completed"
 
-    # Display debug information if enabled
-    if show_debug_info and st.session_state.debug_info:
-        with st.expander("Debug Information"):
-            st.code(st.session_state.debug_info)
-
-            if st.session_state.video_metadata:
-                st.subheader("Video Metadata")
-                st.json(st.session_state.video_metadata)
-
-    # Display results based on current step
-    if st.session_state.translation and st.session_state.processing_step in [
-        "translated",
-        "completed",
-    ]:
-        st.subheader(f"Translation to {target_lang_full}")
-        st.text_area("Translated content", st.session_state.translation, height=150)
-
-    if st.session_state.translated_audio_path and st.session_state.processing_step in [
-        "translated",
-        "completed",
-    ]:
-        st.subheader("Translated Audio")
-        with open(st.session_state.translated_audio_path, "rb") as audio_file:
-            audio_bytes = audio_file.read()
-            st.audio(audio_bytes, format="audio/wav")
-
     if st.session_state.processing_step == "completed":
         st.subheader("Translated Video")
-        # Create a video player for the output video
-        with open(st.session_state.output_video_path, "rb") as video_file:
-            video_bytes = video_file.read()
-            st.video(video_bytes)
+        _, video_col, _ = st.columns([0.35, 0.3, 0.35])
+        with video_col:
+            with open(st.session_state.output_video_path, "rb") as video_file:
+                video_bytes = video_file.read()
+                st.video(video_bytes)
 
         # Create download button for the translated video
         with open(st.session_state.output_video_path, "rb") as file:
@@ -446,8 +337,7 @@ if uploaded_file:
             st.session_state.translated_audio_path = None
             st.session_state.output_video_path = None
             st.session_state.processing_step = None
-            st.session_state.debug_info = None
-
+            st.rerun()
 
 else:
     st.info("Please upload a video file to begin the translation process.")

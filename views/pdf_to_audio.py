@@ -5,12 +5,6 @@ import gc  # Garbage collection
 import streamlit as st
 from tools.pdf_tools import extract_text_from_pdf, text_to_speech, merge_audio_files
 
-st.set_page_config(
-    page_title="PDF to Audio Converter",
-    page_icon="📄",
-    layout="wide",
-)
-
 if (
     "pdf_page_initialized" not in st.session_state
     or not st.session_state.pdf_page_initialized
@@ -138,7 +132,7 @@ if uploaded_file:
 
         # Generate audio for text pages
         if st.button(f"Generate Audio for {page_numbers[selected_page_idx]}"):
-            with st.spinner("Generating audio with OpenAI TTS..."):
+            with st.spinner("Generating audio"):
                 audio_data = text_to_speech(page_data["text"], voice)
                 if audio_data:
                     st.audio(audio_data, format="audio/mp3")

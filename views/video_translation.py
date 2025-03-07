@@ -4,20 +4,15 @@ import streamlit as st
 import gc  # Garbage collection
 from pydub import AudioSegment
 import time
-import numpy as np
 from tools.video_tools import (
     extract_audio_from_video,
     translate_audio,
     merge_video_with_audio,
     split_long_audio,
     adjust_audio_speed,
+    apply_person_segmentation_to_video,
 )
 
-st.set_page_config(
-    page_title="Video Translation Tool",
-    page_icon="🎥",
-    layout="wide",
-)
 
 # Initialize session state variables
 if (
@@ -28,6 +23,7 @@ if (
     st.session_state.audio_path = None
     st.session_state.translated_audio_path = None
     st.session_state.output_video_path = None
+    st.session_state.segmented_video_path = None
     st.session_state.processing_step = None
     st.session_state.transcription = None
     st.session_state.translation = None
@@ -41,6 +37,7 @@ if (
             "audio_path",
             "translated_audio_path",
             "output_video_path",
+            "segmented_video_path",
         ]:
             if (
                 attr in st.session_state
@@ -90,6 +87,7 @@ if uploaded_file:
                     "audio_path",
                     "translated_audio_path",
                     "output_video_path",
+                    "segmented_video_path",
                 ]:
                     if (
                         attr in st.session_state
@@ -118,6 +116,7 @@ if uploaded_file:
         st.session_state.translation = None
         st.session_state.translated_audio_path = None
         st.session_state.output_video_path = None
+        st.session_state.segmented_video_path = None
         st.session_state.processing_step = None
         st.rerun()
 
@@ -145,15 +144,43 @@ if uploaded_file:
             "Handle long videos by splitting audio", value=True
         )
         max_segment_duration = st.slider(
-            "Maximum segment duration (seconds)", 10, 120, 25
+            "Maximum segment duration (seconds)", 60, 240, 120
+        )
+
+        # Add person segmentation options
+        st.subheader("Person Segmentation")
+        enable_person_segmentation = st.checkbox(
+            "Apply green screen effect to people in the video", value=True
         )
 
     # Process video button
     if st.button("Start Translation Process"):
-        # Step 1: Extract audio
+        # Step 1: Apply person segmentation if enabled
+        if enable_person_segmentation and not st.session_state.segmented_video_path:
+
+            status_text = st.empty()
+            progress_bar = st.progress(0.0)
+
+            st.session_state.segmented_video_path = apply_person_segmentation_to_video(
+                st.session_state.video_path,
+                status_text=status_text,
+                progress_bar=progress_bar,
+            )
+
+            if not st.session_state.segmented_video_path:
+                st.error(
+                    "Person segmentation failed. Continuing with the original video."
+                )
+            else:
+                st.success("Person segmentation completed successfully!")
+
+        # Determine which video to use (segmented or original)
+        processing_video_path = st.session_state.video_path
+
+        # Step 2: Extract audio (from either the segmented or original video)
         if not st.session_state.audio_path:
             st.session_state.audio_path = extract_audio_from_video(
-                st.session_state.video_path
+                processing_video_path
             )
             if not st.session_state.audio_path:
                 st.error(
@@ -162,7 +189,7 @@ if uploaded_file:
                 st.stop()
             st.session_state.processing_step = "audio_extracted"
 
-        # Step 2: Translate audio directly (combines transcription, translation, and TTS)
+        # Step 3: Translate audio directly (combines transcription, translation, and TTS)
         if (
             st.session_state.processing_step == "audio_extracted"
             and not st.session_state.translated_audio_path
@@ -234,7 +261,7 @@ if uploaded_file:
 
             st.session_state.processing_step = "translated"
 
-        # Step 3: Merge video with translated audio
+        # Step 4: Merge video with translated audio
         if (
             st.session_state.processing_step == "translated"
             and not st.session_state.output_video_path
@@ -271,10 +298,15 @@ if uploaded_file:
                         translated_audio.export(temp_audio.name, format="wav")
                         st.session_state.translated_audio_path = temp_audio.name
 
-            # Merge with video
+            # Merge with video (using the appropriate video - segmented or original)
             start_time = time.time()
             st.session_state.output_video_path = merge_video_with_audio(
-                st.session_state.video_path, st.session_state.translated_audio_path
+                (
+                    st.session_state.segmented_video_path
+                    if st.session_state.segmented_video_path
+                    else st.session_state.video_path
+                ),
+                st.session_state.translated_audio_path,
             )
             processing_time = time.time() - start_time
 
@@ -294,14 +326,40 @@ if uploaded_file:
                 video_bytes = video_file.read()
                 st.video(video_bytes)
 
+        # Add a section to display the original and transcription/translation
+        if st.session_state.transcription and st.session_state.translation:
+            with st.expander("Show Transcription and Translation"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("Original Text")
+                    st.text_area(
+                        "",
+                        value=st.session_state.transcription,
+                        height=200,
+                        disabled=True,
+                    )
+                with col2:
+                    st.subheader(f"Translation ({target_lang_full})")
+                    st.text_area(
+                        "",
+                        value=st.session_state.translation,
+                        height=200,
+                        disabled=True,
+                    )
+
         # Create download button for the translated video
         with open(st.session_state.output_video_path, "rb") as file:
             video_name = uploaded_file.name.split(".")[0]
             target_lang_short = target_lang_full.lower()
+            filename_suffix = (
+                "_segmented"
+                if enable_person_segmentation and st.session_state.segmented_video_path
+                else ""
+            )
             st.download_button(
                 label="Download Translated Video",
                 data=file,
-                file_name=f"{video_name}_translated_to_{target_lang_short}.mp4",
+                file_name=f"{video_name}_translated_to_{target_lang_short}{filename_suffix}.mp4",
                 mime="video/mp4",
             )
 
@@ -313,6 +371,7 @@ if uploaded_file:
                 "audio_path",
                 "translated_audio_path",
                 "output_video_path",
+                "segmented_video_path",
             ]:
                 if (
                     attr in st.session_state
@@ -331,6 +390,7 @@ if uploaded_file:
             st.session_state.translation = None
             st.session_state.translated_audio_path = None
             st.session_state.output_video_path = None
+            st.session_state.segmented_video_path = None
             st.session_state.processing_step = None
             st.rerun()
 
@@ -339,7 +399,9 @@ else:
 
 # Add footer
 st.markdown("---")
-st.markdown("Video Translation Tool | Built with Streamlit, MoviePy, and OpenAI")
+st.markdown(
+    "Video Translation Tool | Built with Streamlit, MoviePy, OpenAI, and Ultralytics Hub"
+)
 
 # Force garbage collection to free memory
 gc.collect()

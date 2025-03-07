@@ -8,47 +8,28 @@ import streamlit as st
 import numpy as np
 import pyrubberband as pyrb
 
+# Additional imports for object detection and masking
+import cv2
+from ultralytics import YOLO, settings, models
+
 # Initialize OpenAI client from environment variable
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-
-# Define helper functions for video translation process
-def get_video_metadata(video_path):
-    """Extract metadata from video file using MoviePy"""
-    try:
-        with VideoFileClip(video_path) as video_clip:
-            # Get video properties
-            metadata = {
-                "format": {
-                    "duration": video_clip.duration,
-                    "size": os.path.getsize(video_path),
-                    "filename": os.path.basename(video_path),
-                },
-                "streams": [
-                    {
-                        "codec_type": "video",
-                        "width": video_clip.size[0],
-                        "height": video_clip.size[1],
-                        "r_frame_rate": f"{video_clip.fps}/1",
-                        "tags": {},
-                    }
-                ],
-            }
-
-            # Check for audio stream
-            if video_clip.audio is not None:
-                metadata["streams"].append(
-                    {
-                        "codec_type": "audio",
-                        "sample_rate": video_clip.audio.fps,
-                        "channels": video_clip.audio.nchannels,
-                    }
-                )
-
-            return metadata
-    except Exception as e:
-        st.warning(f"Could not extract video metadata: {str(e)}")
-        return None
+# Load YOLO model once at module level
+try:
+    models.yolo.segment
+    if not os.path.exists("weights"):
+        os.makedirs("weights")
+    model_path = "weights/yolo11x-seg.pt"
+    settings.update({"weights_dir": "weights"})
+    # Using YOLOv12n-seg model for instance segmentation
+    yolo_model = YOLO(
+        model=model_path,
+        verbose=True,
+    )
+except Exception as e:
+    yolo_model = None
+    st.warning(f"Could not initialize YOLO model: {str(e)}")
 
 
 def extract_audio_from_video(video_path):
@@ -420,3 +401,175 @@ def adjust_audio_speed(audio_path, speed_ratio):
         except Exception as e2:
             st.error(f"All audio adjustment methods failed: {str(e2)}")
             return audio_path  # Return original as last resort
+
+
+# Functions for Person Instance Segmentation using Ultralytics YOLO SDK
+
+
+def segment_image_with_yolo(image):
+    """
+    Process an image using Ultralytics YOLO model for person segmentation
+
+    Args:
+        image: The image as a numpy array (from OpenCV)
+    Returns:
+        Segmentation results from YOLO model
+    """
+    try:
+        if yolo_model is None:
+            st.warning("YOLO model not initialized")
+            return None
+
+        # Run yolov12n inference on the image
+        results = yolo_model(image, conf=0.25, iou=0.45, classes=0)  # class 0 is person
+
+        # Return the first result (should only be one since we're processing one image)
+        return results[0] if results else None
+
+    except Exception as e:
+        st.warning(f"YOLO inference failed: {str(e)}")
+        return None
+
+
+def process_frame_with_yolo(frame):
+    """
+    Process a single frame with Ultralytics YOLO to detect people and replace with solid green
+    """
+    try:
+        # Clone the frame to avoid modifying the original
+        processed_frame = frame.copy()
+
+        # Get segmentation results from YOLO
+        result = segment_image_with_yolo(frame)
+
+        if result is None or not hasattr(result, "masks") or result.masks is None:
+            return frame
+
+        # Create a combined mask for all person instances
+        height, width = frame.shape[:2]
+        combined_mask = np.zeros((height, width), dtype=np.uint8)
+
+        # Check if we have mask data
+        if result.masks and len(result.masks) > 0:
+            # Process each person detection mask
+            for i, mask in enumerate(result.masks):
+                # The masks in YOLO's output are already in the correct format
+                # Convert the floating point mask to binary
+                person_mask = mask.data.cpu().numpy()[0]
+
+                # Resize mask to match frame dimensions if needed
+                if person_mask.shape != (height, width):
+                    person_mask = cv2.resize(person_mask, (width, height))
+
+                # Convert to binary mask (0 or 255)
+                binary_mask = (person_mask > 0.5).astype(np.uint8) * 255
+
+                # Add to combined mask
+                combined_mask = cv2.bitwise_or(combined_mask, binary_mask)
+
+        # Create a solid green color array
+        solid_green = np.zeros_like(frame)
+        solid_green[:, :] = (0, 255, 0)  # Green in BGR format
+
+        # Convert the combined mask to 3 channels for boolean indexing
+        mask_3ch = cv2.merge([combined_mask, combined_mask, combined_mask])
+
+        # Apply the solid green color directly to the masked areas
+        # This completely replaces the original pixels with green color where the mask exists
+        np.copyto(processed_frame, solid_green, where=(mask_3ch > 0))
+
+        return processed_frame
+
+    except Exception as e:
+        st.warning(f"Error processing frame with YOLO: {str(e)}")
+        return frame
+
+
+def apply_person_segmentation_to_video(
+    video_path,
+    status_text=None,
+    progress_bar=None,
+):
+    """
+    Process video by applying person segmentation and green mask to each frame
+    using Ultralytics YOLO SDK for accurate person masks
+
+    Args:
+        video_path: Path to the video file
+        status_text: A Streamlit text element for status updates
+        progress_bar: A Streamlit progress bar element
+    """
+    try:
+        with st.spinner("Processing video with YOLO for person segmentation..."):
+            # Open the video file
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                st.error("Error opening video file")
+                return None
+
+            # Get video properties
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            # Create output video file
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=".mp4"
+            ) as temp_output:
+                output_path = temp_output.name
+
+            # Initialize video writer
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # Use mp4v codec
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+            # Process video frames
+            frame_count = 0
+
+            # Calculate frame processing interval based on video length
+            # For very long videos, we might process fewer frames
+            processing_interval = max(1, total_frames // 100)
+
+            if status_text:
+                status_text.text("Starting video processing with YOLO...")
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                processed_frame = process_frame_with_yolo(frame)
+
+                # Write the processed frame
+                out.write(processed_frame)
+
+                # Update progress
+                frame_count += 1
+                if frame_count % processing_interval == 0:
+                    progress = frame_count / total_frames
+                    if progress_bar:
+                        progress_bar.progress(progress)
+                    if status_text:
+                        status_text.text(
+                            f"Processing video with YOLO: {int(progress * 100)}% complete"
+                        )
+
+            # Release resources
+            cap.release()
+            out.release()
+
+            # Force garbage collection
+            gc.collect()
+
+            # Ensure the output file was created successfully
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                if status_text:
+                    status_text.text("Video processing with YOLO complete!")
+                return output_path
+            else:
+                st.error("Failed to create output video file")
+                return None
+
+    except Exception as e:
+        st.error(f"Error in video processing: {str(e)}")
+        return None

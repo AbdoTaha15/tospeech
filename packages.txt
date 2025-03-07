@@ -1,0 +1,3 @@
+ffmpeg
+rubberband-cli
+poppler-utils

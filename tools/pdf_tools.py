@@ -105,21 +105,17 @@ Begin processing the image now and output only the text content you extract.
         raise Exception(f"Error extracting text with Gemini: {str(e)}")
 
 
-def extract_text_from_pdf(pdf_path):
-    """Extract text from a text-based PDF using PyPDF."""
-    # Convert PDF to a list of PIL Image objects
-    pages = convert_from_path(pdf_path, dpi=500, fmt="png", thread_count=4)
-    results = []
-
-    for i, page in enumerate(pages, start=1):
-        results.append(
-            {
-                "page": i,
-                "text": extract_text_from_image_openai(page),
-            }
-        )
-        print(f"Extracted text from page {i}")
-    return results
+def extract_text_from_pdf(page, page_number):
+    try:
+        result = {
+            "page": page_number,
+            "text": extract_text_from_image_openai(page),
+        }
+        print(f"Extracted text from page {page_number}")
+        return result
+    except Exception as e:
+        st.error(f"Error extracting text from page {page_number}: {str(e)}")
+        return None
 
 
 def text_to_speech(text, voice="alloy"):
@@ -167,42 +163,98 @@ def text_to_speech(text, voice="alloy"):
         return None
 
 
+def pdf_to_images(pdf_path):
+    """
+    Convert PDF pages to images.
+
+    Returns a list of dictionaries, each containing:
+    - page: page number (1-based)
+    - image: PIL Image object
+    - text: initially None, to be filled with extracted text later
+    """
+    try:
+        # Convert PDF to a list of PIL Image objects
+        image_list = convert_from_path(
+            pdf_path, dpi=500, fmt="png", thread_count=os.cpu_count()
+        )
+
+        # Create a list of dictionaries with page numbers and images
+        pages_data = [
+            {"page": i, "image": img, "text": None}
+            for i, img in enumerate(image_list, start=1)
+        ]
+
+        return pages_data
+    except Exception as e:
+        st.error(f"Error converting PDF to images: {str(e)}")
+        return None
+
+
 def merge_audio_files(audio_files_dict):
     """
     Merge multiple audio files into a single audio file.
 
     Parameters:
-    - audio_files_dict: Dictionary with page indices as keys and audio data as values
+    - audio_files_dict: Dictionary with page indices as keys and file paths as values
 
     Returns:
     - BytesIO object containing merged audio data in MP3 format
     """
     try:
-        # Create a silent audio segment to start with
-        merged = AudioSegment.silent(duration=500)  # Start with 500ms silence
-
         # Sort the keys to process pages in order
         sorted_keys = sorted(audio_files_dict.keys())
 
+        if not sorted_keys:
+            st.warning("No audio files to merge")
+            return None
+
+        # Create a silent audio segment to start with
+        merged = AudioSegment.silent(duration=500)  # Start with 500ms silence
+
+        # Process each audio file
         for idx in sorted_keys:
-            # Get the audio data for this page
-            audio_data = audio_files_dict[idx]
-            audio_data.seek(0)
+            try:
+                # Get the audio file path
+                audio_file_path = audio_files_dict[idx]
 
-            # Load the audio segment from the BytesIO object
-            segment = AudioSegment.from_file(audio_data, format="wav")
+                # Verify file exists
+                if not os.path.exists(audio_file_path):
+                    st.warning(f"Audio file for page {idx+1} not found.")
+                    continue
 
-            # Add a short pause between pages (1 second)
-            pause = AudioSegment.silent(duration=1000)
+                # Load the audio file
+                try:
+                    segment = AudioSegment.from_file(audio_file_path)
+                except Exception as format_error:
+                    st.warning(
+                        f"Error loading audio file for page {idx+1}: {str(format_error)}"
+                    )
+                    continue
 
-            # Add the current segment to the merged audio
-            merged = merged + segment + pause
+                # Add segment to the merged audio
+                pause = AudioSegment.silent(
+                    duration=1000
+                )  # 1 second pause between segments
+                merged = merged + segment + pause
+                st.info(f"Successfully added page {idx+1} audio")
 
-        # Export the merged audio to a BytesIO object in MP3 format
-        output = io.BytesIO()
-        merged.export(output, format="mp3")
-        output.seek(0)
-        return output
+            except Exception as e:
+                st.warning(f"Error processing audio file for page {idx+1}: {str(e)}")
+
+        # If we have content in merged audio, export it
+        if len(merged) > 500:  # More than just the initial silence
+            # Export the merged audio to a BytesIO object in MP3 format
+            output = io.BytesIO()
+            merged.export(output, format="mp3", bitrate="192k")
+            output.seek(0)
+            return output
+        else:
+            st.warning("No valid audio segments were loaded for merging")
+            return None
+
     except Exception as e:
         st.error(f"Error merging audio files: {str(e)}")
+        import traceback
+
+        st.error(traceback.format_exc())
         return None

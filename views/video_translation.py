@@ -140,6 +140,7 @@ if uploaded_file:
 
     # Add advanced options expander
     with st.expander("Advanced Options"):
+        st.subheader("Long Video Handling")
         handle_long_videos = st.checkbox(
             "Handle long videos by splitting audio", value=True
         )
@@ -148,10 +149,22 @@ if uploaded_file:
         )
 
         # Add person segmentation options
-        st.subheader("Person Segmentation")
+        st.subheader("Remove People")
         enable_person_segmentation = st.checkbox(
             "Apply green screen effect to people in the video", value=True
         )
+
+        audio_models_options = {
+            "Standard TTS model": "tts-1",
+            "High-definition TTS model": "tts-1-hd",
+        }
+
+        st.subheader("Audio Quality")
+        selected_audio_model = st.selectbox(
+            "Select audio quality for speech:",
+            list(audio_models_options.keys()),
+        )
+        audio_model = audio_models_options[selected_audio_model]
 
     # Process video button
     if st.button("Start Translation Process"):
@@ -209,7 +222,10 @@ if uploaded_file:
                     st.session_state.translation,
                     st.session_state.translated_audio_path,
                 ) = translate_audio(
-                    st.session_state.audio_path, target_lang_full, voice
+                    st.session_state.audio_path,
+                    target_lang_full,
+                    voice,
+                    audio_model,
                 )
             else:
                 # Multiple segment processing
@@ -224,7 +240,10 @@ if uploaded_file:
                         f"Processing segment {i+1} of {len(audio_segments)}..."
                     )
                     _, segment_translation, segment_audio_path = translate_audio(
-                        segment_path, target_lang_full, voice
+                        segment_path,
+                        target_lang_full,
+                        voice,
+                        audio_model,
                     )
 
                     if segment_translation and segment_audio_path:
@@ -399,9 +418,6 @@ else:
 
 # Add footer
 st.markdown("---")
-st.markdown(
-    "Video Translation Tool | Built with Streamlit, MoviePy, OpenAI, and Ultralytics Hub"
-)
 
 # Force garbage collection to free memory
 gc.collect()

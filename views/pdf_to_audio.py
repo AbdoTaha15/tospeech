@@ -1,9 +1,16 @@
 import os
 import tempfile
 import gc  # Garbage collection
-
+import io
+import base64
 import streamlit as st
-from tools.pdf_tools import extract_text_from_pdf, text_to_speech, merge_audio_files
+from tools.pdf_tools import (
+    extract_text_from_pdf,
+    text_to_speech,
+    merge_audio_files,
+    pdf_to_images,
+    extract_text_from_image_openai,
+)
 
 if (
     "pdf_page_initialized" not in st.session_state
@@ -41,10 +48,27 @@ if (
             except:
                 pass
 
+        # Clean up audio files in session state
+        if "audio_files" in st.session_state:
+            for file_path in st.session_state.audio_files.values():
+                if os.path.exists(file_path):
+                    try:
+                        os.unlink(file_path)
+                    except:
+                        pass
+
     # Register cleanup function to run when the app exits
     import atexit
 
     atexit.register(cleanup)
+
+
+# Helper function to convert image to base64 for display
+def get_image_base64(pil_img):
+    buffered = io.BytesIO()
+    pil_img.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    return img_str
 
 
 # File uploader
@@ -83,10 +107,15 @@ if uploaded_file:
 
         # Process the PDF
         with st.spinner("Processing PDF..."):
-            st.session_state.pages_data = extract_text_from_pdf(
-                st.session_state.pdf_path
-            )
+            st.session_state.pages_data = pdf_to_images(st.session_state.pdf_path)
             # Reset other session state variables
+            # Clean up old audio files first
+            for file_path in st.session_state.audio_files.values():
+                if os.path.exists(file_path):
+                    try:
+                        os.unlink(file_path)
+                    except:
+                        pass
             st.session_state.audio_files = {}
             st.session_state.batch_progress = 0
             st.session_state.batch_total = 0
@@ -108,6 +137,21 @@ if uploaded_file:
     )
     voice = voice_options[selected_voice]
 
+    # Add advanced options expander
+    with st.expander("Advanced Options"):
+        audio_models_options = {
+            "Standard TTS model": "tts-1",
+            "High-definition TTS model": "tts-1-hd",
+        }
+
+        st.subheader("Audio Quality")
+        selected_audio_model = st.selectbox(
+            "Select audio quality for speech:",
+            list(audio_models_options.keys()),
+        )
+        audio_model = audio_models_options[selected_audio_model]
+        st.markdown("Note: Higher quality models will cost more.")
+
     # Create a dropdown to select the page
     page_numbers = [f"Page {page['page']}" for page in st.session_state.pages_data]
     selected_page_idx = st.selectbox(
@@ -117,77 +161,107 @@ if uploaded_file:
     )
 
     # Display the selected page
-    page_data = st.session_state.pages_data[selected_page_idx]
+    if selected_page_idx < len(st.session_state.pages_data):
+        page_data = st.session_state.pages_data[selected_page_idx]
 
-    st.markdown(f"### {page_numbers[selected_page_idx]}")
+        st.markdown(f"### {page_numbers[selected_page_idx]}")
 
-    # Handle page based on type
-    if page_data["text"]:
-        st.markdown("**Extracted Text:**")
-        st.text_area(
-            f"Text from {page_numbers[selected_page_idx]}",
-            page_data["text"],
-            height=200,
-        )
+        # Show image preview of the page
+        col1, col2 = st.columns([2, 3])
 
-        # Generate audio for text pages
-        if st.button(f"Generate Audio for {page_numbers[selected_page_idx]}"):
-            with st.spinner("Generating audio"):
-                audio_data = text_to_speech(page_data["text"], voice)
-                if audio_data:
-                    st.audio(audio_data, format="audio/mp3")
+        with col1:
+            st.image(
+                page_data["image"],
+                caption=f"Page {page_data['page']}",
+                use_container_width=True,
+            )
 
-                    # Store audio data in session state
-                    st.session_state.audio_files[selected_page_idx] = audio_data
+        with col2:
+            # Button to extract text from this page
+            if st.button("Extract Text"):
+                with st.spinner("Extracting text from page..."):
+                    # Extract text using OpenAI Vision
+                    extracted_text = extract_text_from_image_openai(page_data["image"])
+                    # Save the extracted text in the pages_data
+                    st.session_state.pages_data[selected_page_idx][
+                        "text"
+                    ] = extracted_text
+                    st.rerun()
 
-                    # Create a download link
-                    download_filename = f"page_{page_data['page']}.mp3"
-                    st.download_button(
-                        label="Download MP3",
-                        data=audio_data,
-                        file_name=download_filename,
-                        mime="audio/mp3",
-                    )
-                    # st.markdown(
-                    #     get_binary_file_downloader_html(
-                    #         audio_data, "Download MP3", download_filename
-                    #     ),
-                    #     unsafe_allow_html=True,
-                    # )
+            # Show extracted text if available
+            if page_data.get("text"):
+                st.markdown("**Extracted Text:**")
+                st.text_area(
+                    f"Text from Page {page_data['page']}",
+                    page_data["text"],
+                    height=200,
+                )
+
+                # Generate audio for text pages
+                if st.button(f"Generate Audio for {page_numbers[selected_page_idx]}"):
+                    with st.spinner("Generating audio"):
+                        audio_data = text_to_speech(page_data["text"], voice)
+                        if audio_data:
+                            # Save audio data to a temporary file
+                            with tempfile.NamedTemporaryFile(
+                                delete=False, suffix=".wav"
+                            ) as temp_audio_file:
+                                # Write the audio data to the file
+                                audio_data.seek(0)
+                                temp_audio_file.write(audio_data.read())
+                                audio_file_path = temp_audio_file.name
+
+                            # Reset audio data to beginning for display
+                            audio_data.seek(0)
+
+                            # Display audio player
+                            st.audio(audio_data, format="audio/mp3")
+
+                            # Store audio file path in session state
+                            st.session_state.audio_files[selected_page_idx] = (
+                                audio_file_path
+                            )
+
+                            # Create a download link
+                            download_filename = f"page_{page_data['page']}.mp3"
+                            st.download_button(
+                                label="Download MP3",
+                                data=audio_data,
+                                file_name=download_filename,
+                                mime="audio/mp3",
+                            )
 
     # Add a batch processing section
     st.markdown("---")
     st.markdown("### Batch Processing")
 
-    # Display batch processing options
+    # Page range selection
+    total_pages = len(st.session_state.pages_data)
     col1, col2 = st.columns(2)
 
-    # Batch size selection
-    batch_size_options = [1, 2, 3, 5, 10]
     with col1:
-        batch_size = st.selectbox("Pages per batch:", batch_size_options, index=1)
-
-    # Page range selection
-    with col2:
-        total_pages = len(st.session_state.pages_data)
         start_page = st.number_input(
             "Start page:", min_value=1, max_value=total_pages, value=1
         )
+
+    with col2:
         end_page = st.number_input(
             "End page:",
             min_value=start_page,
             max_value=total_pages,
-            value=min(start_page + batch_size - 1, total_pages),
+            value=total_pages,
         )
 
     # If batch processing is in progress, show progress
     if st.session_state.batch_processing:
         progress_bar = st.progress(0)
         status_text = st.empty()
+        current_page_info = st.empty()  # Container for current page info
 
         # Continue processing from where we left off
         start_idx = st.session_state.batch_page_index
-        end_idx = min(start_idx + batch_size, len(st.session_state.pages_data))
+        # Process all pages within selected range
+        end_idx = end_page
 
         # Only process pages within selected range
         start_idx = max(start_idx, start_page - 1)
@@ -211,13 +285,32 @@ if uploaded_file:
             page_num = page["page"]
 
             status_text.text(f"Processing Page {page_num}...")
+            current_page_info.text(f"Current page: {page_num} of {end_page}")
 
-            if page["text"]:
-                if current_idx not in st.session_state.audio_files:
-                    audio_data = text_to_speech(page["text"], voice)
-                    if audio_data:
-                        # Store audio data in session state
-                        st.session_state.audio_files[current_idx] = audio_data
+            # Extract text if not already available
+            if not page.get("text"):
+                page_text = extract_text_from_image_openai(page["image"])
+                st.session_state.pages_data[current_idx]["text"] = page_text
+
+            # Clear any previous content from page info area
+            current_page_info.empty()
+            current_page_info.text(f"Current page: {page_num} of {end_page}")
+
+            # Generate audio if not already available
+            if page.get("text") and current_idx not in st.session_state.audio_files:
+                audio_data = text_to_speech(page["text"], voice)
+                if audio_data:
+                    # Save audio data to a temporary file
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=".wav"
+                    ) as temp_audio_file:
+                        # Write the audio data to the file
+                        audio_data.seek(0)
+                        temp_audio_file.write(audio_data.read())
+                        audio_file_path = temp_audio_file.name
+
+                    # Store audio file path in session state
+                    st.session_state.audio_files[current_idx] = audio_file_path
 
             # Update progress
             st.session_state.batch_progress += 1
@@ -236,19 +329,20 @@ if uploaded_file:
         if st.session_state.batch_page_index >= end_page:
             st.session_state.batch_processing = False
             status_text.text("Batch processing complete!")
+            current_page_info.empty()  # Clear the info area
 
             # Summary of processed pages
             st.success(
                 f"Successfully processed {st.session_state.batch_progress} pages."
             )
 
-            # Add a refresh button to see results
-            if st.button("Refresh to see results"):
-                st.rerun()
-        else:
-            # Not done yet, add continue button
-            if st.button("Process Next Batch"):
-                st.rerun()
+            # Auto-merge all audio files when processing is complete
+            with st.spinner("Merging all audio files..."):
+                merged_audio = merge_audio_files(st.session_state.audio_files)
+                if merged_audio:
+                    st.session_state.merged_audio = merged_audio
+                    st.success("Audio files merged successfully!")
+                    st.rerun()
     else:
         # Option to start batch processing
         if st.button("Start Batch Processing"):
@@ -267,22 +361,8 @@ if uploaded_file:
 
         # Display in a more compact form
         processed_pages = sorted(list(st.session_state.audio_files.keys()))
-        pages_text = ", ".join(
-            [
-                f"Page {st.session_state.pages_data[idx]['page']}"
-                for idx in processed_pages
-            ]
-        )
-        st.success(f"Audio generated for {len(processed_pages)} pages: {pages_text}")
 
-        # Add option to merge all audio files
-        if st.button("Merge All Audio Files into One"):
-            with st.spinner("Merging audio files..."):
-                merged_audio = merge_audio_files(st.session_state.audio_files)
-                if merged_audio:
-                    st.session_state.merged_audio = merged_audio
-                    st.success("Audio files merged successfully!")
-                    st.rerun()
+        st.success(f"Audio generated for {len(processed_pages)} pages")
 
         # Display merged audio if available
         if st.session_state.merged_audio:
@@ -301,12 +381,20 @@ if uploaded_file:
                 mime="audio/mp3",
                 key="merged_audio_download",
             )
+        else:
+            # Add option to merge all audio files manually if it wasn't done automatically
+            if st.button("Merge All Audio Files into One"):
+                with st.spinner("Merging audio files..."):
+                    merged_audio = merge_audio_files(st.session_state.audio_files)
+                    if merged_audio:
+                        st.session_state.merged_audio = merged_audio
+                        st.success("Audio files merged successfully!")
+                        st.rerun()
 else:
     st.info("Please upload a PDF file to begin.")
 
 # Add footer
 st.markdown("---")
-st.markdown("PDF to Speech Converter | Built with Streamlit, PyPDF, and OpenAI")
 
 # Run garbage collection to free memory
 gc.collect()

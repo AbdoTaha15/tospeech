@@ -11,6 +11,7 @@ import pyrubberband as pyrb
 # Additional imports for object detection and masking
 import cv2
 from ultralytics import YOLO, settings, models
+import torch
 
 # Initialize OpenAI client from environment variable
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -27,6 +28,9 @@ try:
         model=model_path,
         verbose=True,
     )
+    if torch.cuda.is_available():
+        print("Using GPU for YOLO model")
+        yolo_model.to("cuda")
 except Exception as e:
     yolo_model = None
     st.warning(f"Could not initialize YOLO model: {str(e)}")
@@ -69,7 +73,7 @@ def extract_audio_from_video(video_path):
         return None
 
 
-def translate_audio(audio_path, target_language, voice="alloy"):
+def translate_audio(audio_path, target_language, voice="alloy", audio_model="tts-1"):
     """Translate audio directly to target language using GPT-4o Audio Preview"""
     try:
         # Check audio file size before processing
@@ -124,7 +128,7 @@ Expected Output:
                 translation = completion.choices[0].message.content
 
                 with client.audio.speech.with_streaming_response.create(
-                    model="tts-1",
+                    model=audio_model,
                     voice=voice,
                     input=translation,
                 ) as response:
@@ -500,7 +504,9 @@ def apply_person_segmentation_to_video(
         progress_bar: A Streamlit progress bar element
     """
     try:
-        with st.spinner("Processing video with YOLO for person segmentation..."):
+        with st.spinner(
+            "Processing video with YOLO for applying green screen on people..."
+        ):
             # Open the video file
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():

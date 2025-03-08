@@ -59,7 +59,6 @@ Dockerfile
 *.swo
 
 # Others
-README.md
 LICENSE
 .DS_Store
 data/

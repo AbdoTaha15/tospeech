@@ -49,6 +49,7 @@ A multimedia conversion tool built with Streamlit that offers two main features:
 
    ```
    OPENAI_API_KEY=your_openai_api_key_here
+   GENAI_API_KEY=your_genai_api_key_here
    ```
 
 3. Build and run the Docker container:
@@ -79,6 +80,25 @@ A multimedia conversion tool built with Streamlit that offers two main features:
      ```bash
      brew install ffmpeg rubberband poppler
      ```
+   - For Windows:
+
+     ```powershell
+     # Install Chocolatey package manager first if not installed
+     # Run PowerShell as Administrator and execute:
+     # Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+     # Then install required packages
+     choco install ffmpeg -y
+     choco install rubberband -y
+     choco install poppler -y
+
+     # Alternative: Download manually
+     # FFmpeg: https://ffmpeg.org/download.html
+     # RubberBand: https://breakfastquay.com/rubberband/
+     # Poppler: https://github.com/oschwartz10612/poppler-windows/releases
+
+     # Add installed tools to your system PATH
+     ```
 
 3. Create a Python virtual environment and activate it:
 
@@ -97,6 +117,7 @@ A multimedia conversion tool built with Streamlit that offers two main features:
 
    ```
    OPENAI_API_KEY=your_openai_api_key_here
+   GENAI_API_KEY=your_genai_api_key_here
    ```
 
 6. Run the Streamlit app:

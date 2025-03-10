@@ -5,11 +5,11 @@ import io
 import base64
 import streamlit as st
 from tools.pdf_tools import (
-    extract_text_from_pdf,
     text_to_speech,
     merge_audio_files,
     pdf_to_images,
     extract_text_from_image_openai,
+    extract_text_from_image_gemini,
 )
 
 if (

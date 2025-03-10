@@ -105,19 +105,6 @@ Begin processing the image now and output only the text content you extract.
         raise Exception(f"Error extracting text with Gemini: {str(e)}")
 
 
-def extract_text_from_pdf(page, page_number):
-    try:
-        result = {
-            "page": page_number,
-            "text": extract_text_from_image_openai(page),
-        }
-        print(f"Extracted text from page {page_number}")
-        return result
-    except Exception as e:
-        st.error(f"Error extracting text from page {page_number}: {str(e)}")
-        return None
-
-
 def text_to_speech(text, voice="alloy"):
     """Convert text to speech using OpenAI API."""
     try:

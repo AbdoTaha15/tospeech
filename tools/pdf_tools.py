@@ -45,6 +45,7 @@ def extract_text_from_image_openai(image):
                 },
             ],
             temperature=0.1,
+            max_completion_tokens=1500,
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -91,6 +92,7 @@ def extract_text_from_image_gemini(image):
 Begin processing the image now and output only the text content you extract.
 """,
                 temperature=0.1,
+                max_output_tokens=1500,
             ),
             contents=[
                 file_ref,

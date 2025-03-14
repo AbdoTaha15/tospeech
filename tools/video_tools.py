@@ -124,6 +124,8 @@ Expected Output:
                             ],
                         },
                     ],
+                    max_completion_tokens=len(transcription) * 2,
+                    temperature=0.1,
                 )
                 translation = completion.choices[0].message.content
 

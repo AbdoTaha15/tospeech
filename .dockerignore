@@ -44,6 +44,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Docker related
+.dockerignore
+Dockerfile
 
 # Git
 .git
@@ -62,6 +65,3 @@ data/
 venv/
 weights/
 *.pt
-*.zip
-*.tar
-*.tar.*
